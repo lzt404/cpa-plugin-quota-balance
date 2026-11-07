@@ -1,0 +1,10 @@
+.build/
+bin/
+dist/
+artifacts/
+*.so
+*.dylib
+*.dll
+*.h
+acceptance/fixture.so
+acceptance/fixture/fixture

@@ -1,0 +1,13 @@
+{
+  "id": "quota-balance",
+  "name": "Quota Balance",
+  "version": "1.0.0",
+  "description": "Scheduler plugin that ranks OAuth credentials by remaining quota: healthy accounts are preferred, low-quota accounts are demoted, and near-exhausted accounts are used only as a last resort. Fetches quota through the host quota-provider chain.",
+  "author": "lzt404",
+  "license": "MIT",
+  "abi_version": 1,
+  "schema_version": 10,
+  "sdk_module": "github.com/router-for-me/CLIProxyAPI/v8",
+  "sdk_version": "v8.0.59",
+  "platforms": ["linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64"]
+}

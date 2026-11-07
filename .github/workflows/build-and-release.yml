@@ -1,0 +1,90 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, goos: linux, goarch: amd64 }
+          - { runner: ubuntu-24.04-arm, goos: linux, goarch: arm64 }
+          - { runner: macos-latest, goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.10"
+          cache: true
+
+      - name: Test
+        run: go test -race -v ./...
+
+      - name: Build shared library
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          ext=so
+          [ "$GOOS" = darwin ] && ext=dylib
+          go build -trimpath -buildmode=c-shared -o "quota-balance.$ext" .
+          rm -f quota-balance.h
+
+      - name: Package release asset
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
+            VERSION="0.1.0"
+          fi
+          STAGE="stage/quota-balance-${VERSION}-${GOOS}-${GOARCH}"
+          mkdir -p "$STAGE" artifacts
+          # The store requires the dynamic library at the zip root named <id>.so.
+          cp -f quota-balance.so "$STAGE/" 2>/dev/null || cp -f quota-balance.dylib "$STAGE/quota-balance.so"
+          cp -f manifest.json README.md README.zh-CN.md LICENSE "$STAGE/"
+          python3 package.py "$STAGE" "artifacts/quota-balance_${VERSION}_${GOOS}_${GOARCH}.zip"
+          cd artifacts
+          sha256sum ./*.zip > checksums.txt
+          cat checksums.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asset-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: artifacts/*
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Merge checksums
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum ./*.zip > checksums.txt
+          cat checksums.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true

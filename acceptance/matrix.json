@@ -1,0 +1,35 @@
+{
+  "checks": [
+    {
+      "name": "healthy credential preferred regardless of priority",
+      "status": "acct-alpha.json"
+    },
+    {
+      "name": "quota change re-routes to the recovered credential",
+      "status": "acct-beta.json"
+    },
+    {
+      "name": "least-drained credential wins when others are critical",
+      "status": "acct-gamma.json"
+    },
+    {
+      "name": "missing quota evidence falls back to priority order",
+      "status": "acct-alpha.json"
+    },
+    {
+      "name": "management status lists observed credentials",
+      "status": 3
+    },
+    {
+      "name": "disabled plugin exposes no scheduler status route",
+      "status": 404
+    }
+  ],
+  "executed_checks": 6,
+  "core_starts": 2,
+  "fixture_directory": "/tmp/quota-balance-acceptance-jas4pw7_",
+  "port": 56971,
+  "usage_port": 44449,
+  "core_sha256": "f9c123ebf0a1fd29d91c1ae53ad2c49cbea4ebb308bf69abea7e2df8c86f3359",
+  "plugin_sha256": "1115fabe09eb9cc536985427e53974721bd9054f388509aeb4304e660d5c3aeb"
+}
