@@ -4,7 +4,10 @@ Executed against the **released core binary** built from tag `v8.0.59`
 (`CGO_ENABLED=1 go build ./cmd/server`), not a patched worktree.
 
 - Core SHA-256: `f9c123ebf0a1fd29d91c1ae53ad2c49cbea4ebb308bf69abea7e2df8c86f3359`
-- Plugin SHA-256: see `matrix.json` (`plugin_sha256`)
+- Plugin SHA-256: `b11936c7b9be472f23863c29f785dfc23d107147686b0ccde10ecf56f0da31d6`
+- Release asset SHA-256 (linux/amd64 zip): `a46d61ed3ceead5d1e7db04f4a2b47a71123ad951163c15db72ea43057e40d78`
+- Shipped `quota-balance.so` SHA-256: `a20fe8c8ca841067add94dbce724c3622d6406a6836f57bb0de695cd1b936154`
+- Acceptance below was re-run against the **downloaded release asset**, not the local build
 - Plugin loaded from `dist/1.0.0-linux-amd64/quota-balance.so` (the packaged artifact)
 - Harness: `acceptance.py` (this directory). Fixture executor lives in `acceptance/fixture/`
   and is **not** part of the store archive.
