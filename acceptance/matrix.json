@@ -23,9 +23,9 @@
   ],
   "executed_checks": 5,
   "core_starts": 2,
-  "fixture_directory": "/tmp/quota-balance-acceptance-8nmgqe55",
-  "port": 51833,
-  "usage_port": 60195,
+  "fixture_directory": "/tmp/quota-balance-acceptance-4pdld0gq",
+  "port": 35185,
+  "usage_port": 54405,
   "core_sha256": "f9c123ebf0a1fd29d91c1ae53ad2c49cbea4ebb308bf69abea7e2df8c86f3359",
-  "plugin_sha256": "ef1d1692db7129890b84e9e231323934b86ad5422fb5be51130382fb52e75402"
+  "plugin_sha256": "2e008a60a812c3b4e5a5ee5e9f4a48ab5013ab7b0ea6f01eb171c7b95f95ccdb"
 }
