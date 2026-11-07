@@ -105,14 +105,14 @@ func pickOnce(t *testing.T, host *fakeHost, candidates ...pluginapi.SchedulerAut
 func TestTierThresholds(t *testing.T) {
 	cfg := defaultSettings
 	cases := map[float64]int{
-		1.0:  0,
-		0.5:  0,
-		0.15: 0,
-		0.14: 2,
-		0.05: 2,
+		1.0:   0,
+		0.5:   0,
+		0.15:  0,
+		0.14:  2,
+		0.05:  2,
 		0.049: 3,
-		0: 3,
-		-1: 1,
+		0:     3,
+		-1:    1,
 	}
 	for score, want := range cases {
 		if got := tier(score, cfg); got != want {

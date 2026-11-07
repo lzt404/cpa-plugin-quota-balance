@@ -38,8 +38,8 @@ import (
 	"unsafe"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
-	"gopkg.in/yaml.v3"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	"gopkg.in/yaml.v3"
 )
 
 func main() {}
@@ -95,15 +95,15 @@ func fixtureDispatch(method string, raw []byte) (any, error) {
 				"GitHubRepository": "https://example.invalid/fixture",
 			},
 			"capabilities": map[string]any{
-				"auth_provider":            false,
-				"executor":                 true,
-				"model_provider":           true,
-				"executor_model_scope":     "both",
-				"executor_input_formats":   []string{"openai"},
-				"executor_output_formats":  []string{"openai"},
-				"quota_provider":           true,
-				"model_registrar":          true,
-				"command_line_plugin":      false,
+				"auth_provider":           false,
+				"executor":                true,
+				"model_provider":          true,
+				"executor_model_scope":    "both",
+				"executor_input_formats":  []string{"openai"},
+				"executor_output_formats": []string{"openai"},
+				"quota_provider":          true,
+				"model_registrar":         true,
+				"command_line_plugin":     false,
 			},
 		}, nil
 	case pluginabi.MethodModelStatic:
