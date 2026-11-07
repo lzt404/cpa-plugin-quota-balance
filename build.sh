@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 ID="quota-balance"
-VERSION="1.0.0"
+VERSION="1.1.0"
 GOOS_TARGET="$(go env GOOS)"
 GOARCH_TARGET="$(go env GOARCH)"
 EXT="so"

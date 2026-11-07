@@ -21,7 +21,7 @@ import (
 
 const (
 	pluginID      = "quota-balance"
-	pluginVersion = "1.0.0"
+	pluginVersion = "0.2.0"
 	pluginAuthor  = "lzt404"
 	pluginRepo    = "https://github.com/lzt404/cpa-plugin-quota-balance"
 
@@ -30,7 +30,7 @@ const (
 	claudeOAuthBeta     = "oauth-2025-04-20"
 	// Codex exposes rate-limit windows through the ChatGPT backend.
 	codexUsageEndpoint = "https://chatgpt.com/backend-api/wham/usage"
-	quotaUserAgent     = "cpa-quota-balance/1.0.0"
+	quotaUserAgent     = "cpa-quota-balance/0.2.0"
 )
 
 // settings is the plugin-owned configuration block under plugins.configs.quota-balance.
@@ -38,6 +38,7 @@ const (
 // document is decoded into rawSettings where those keys are consumed.
 type settings struct {
 	CacheTTL   string   `yaml:"cache_ttl"`
+	Refresh    string   `yaml:"refresh_interval"`
 	Timeout    string   `yaml:"timeout"`
 	Low        float64  `yaml:"low_threshold"`
 	Critical   float64  `yaml:"critical_threshold"`
@@ -51,6 +52,7 @@ type settings struct {
 
 var defaultSettings = settings{
 	CacheTTL:  "5m",
+	Refresh:   "2m",
 	Timeout:   "8s",
 	Low:       0.15,
 	Critical:  0.05,
@@ -88,8 +90,14 @@ type balancer struct {
 	cfg     settings
 	cacheTT time.Duration
 	timeout time.Duration
+	refresh time.Duration
 	// inflight deduplicates concurrent quota probes per credential.
 	inflight map[string]bool
+	// callback is the host bridge captured at registration so the background
+	// refresher can probe without a request in flight.
+	callback hostCallbackFunc
+	stop     chan struct{}
+	running  bool
 	// picks keeps the most recent decisions for diagnosis.
 	picks []pickRecord
 	// pickSeq is a monotonic decision counter so clients can detect a new pick
@@ -103,6 +111,8 @@ var runtime = &balancer{
 	cfg:      defaultSettings,
 	cacheTT:  5 * time.Minute,
 	timeout:  8 * time.Second,
+	refresh:  2 * time.Minute,
+	stop:     make(chan struct{}),
 }
 
 // hostCallbackFunc issues a plugin-to-host RPC and returns its raw result.
@@ -132,6 +142,9 @@ func parseSettings(raw []byte) (settings, error) {
 	}
 	if strings.TrimSpace(cfg.Timeout) == "" {
 		cfg.Timeout = defaultSettings.Timeout
+	}
+	if strings.TrimSpace(cfg.Refresh) == "" {
+		cfg.Refresh = defaultSettings.Refresh
 	}
 	if len(cfg.Providers) == 0 {
 		cfg.Providers = append([]string(nil), defaultSettings.Providers...)
@@ -164,11 +177,17 @@ func applySettings(cfg settings) {
 	if errTimeout != nil || timeout <= 0 {
 		timeout = 8 * time.Second
 	}
+	refresh, errRefresh := time.ParseDuration(cfg.Refresh)
+	if errRefresh != nil || refresh <= 0 {
+		refresh = 2 * time.Minute
+	}
 	runtime.mu.Lock()
 	runtime.cfg = cfg
 	runtime.cacheTT = cacheTTL
 	runtime.timeout = timeout
+	runtime.refresh = refresh
 	runtime.mu.Unlock()
+	runtime.startRefresher()
 }
 
 // validateEndpoint accepts only absolute http(s) URLs so a typo cannot route a
@@ -400,6 +419,78 @@ func credentialTokens(raw json.RawMessage) (accessToken, accountID string) {
 	return accessToken, accountID
 }
 
+// startRefresher runs a single background loop that re-probes every known credential.
+// Scheduling itself never waits on the network: pick() only reads this cache, so a
+// slow or failing usage endpoint cannot add latency to a model request.
+func (b *balancer) startRefresher() {
+	b.mu.Lock()
+	if b.callback == nil || b.running {
+		b.mu.Unlock()
+		return
+	}
+	b.running = true
+	stop := make(chan struct{})
+	b.stop = stop
+	interval := b.refresh
+	callback := b.callback
+	b.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		b.probeAll(callback)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				b.probeAll(callback)
+			}
+		}
+	}()
+}
+
+// probeAll refreshes the catalog and then probes every eligible credential.
+func (b *balancer) probeAll(callback hostCallbackFunc) {
+	if callback == nil {
+		return
+	}
+	if entries := fetchCatalog(callback); len(entries) > 0 {
+		b.setCatalog(entries)
+	}
+	b.mu.Lock()
+	entries := append([]pluginapi.HostAuthFileEntry(nil), b.catalog...)
+	b.mu.Unlock()
+
+	slots := make(chan struct{}, 4)
+	var wait sync.WaitGroup
+	for _, entry := range entries {
+		if !b.claim(entry.ID) {
+			continue
+		}
+		wait.Add(1)
+		slots <- struct{}{}
+		go func(item pluginapi.HostAuthFileEntry) {
+			defer wait.Done()
+			defer func() { <-slots }()
+			defer b.release(item.ID)
+			b.probeQuota(callback, item)
+		}(entry)
+	}
+	wait.Wait()
+}
+
+// attachCallback records the host bridge and starts the refresher loop.
+func (b *balancer) attachCallback(callback hostCallbackFunc) {
+	if callback == nil {
+		return
+	}
+	b.mu.Lock()
+	b.callback = callback
+	b.mu.Unlock()
+	b.startRefresher()
+}
+
 // probeQuota fetches and scores one credential's remaining quota.
 func (b *balancer) probeQuota(callback hostCallbackFunc, entry pluginapi.HostAuthFileEntry) {
 	if callback == nil || strings.TrimSpace(entry.AuthIndex) == "" {
@@ -528,10 +619,6 @@ func pick(request pluginapi.SchedulerPickRequest, callback hostCallbackFunc) (pl
 	cfg := runtime.cfg
 	runtime.mu.Unlock()
 
-	if entries := fetchCatalog(callback); len(entries) > 0 {
-		runtime.setCatalog(entries)
-	}
-
 	list := make([]ranked, 0, len(request.Candidates))
 	for index, candidate := range request.Candidates {
 		provider := strings.ToLower(strings.TrimSpace(candidate.Provider))
@@ -544,39 +631,26 @@ func pick(request pluginapi.SchedulerPickRequest, callback hostCallbackFunc) (pl
 		return pluginapi.SchedulerPickResponse{}, nil
 	}
 
-	var wait sync.WaitGroup
-	slots := make(chan struct{}, 4)
+	// Rank from the observations the background refresher maintains. This is a pure
+	// in-memory decision: no request ever waits on a usage endpoint. An observation
+	// older than cache_ttl is treated as unknown so a stuck refresher cannot keep
+	// ranking a credential on a stale number.
+	runtime.mu.Lock()
+	cacheTTL := runtime.cacheTT
+	runtime.mu.Unlock()
 	for position := range list {
-		candidate := list[position].candidate
-		if runtime.fresh(candidate.ID) {
-			observation, _ := runtime.observe(candidate.ID)
-			list[position].quota = observation
-			list[position].hasQuota = observation.score >= 0
+		observation, ok := runtime.observe(list[position].candidate.ID)
+		if !ok {
 			continue
 		}
-		if !runtime.claim(candidate.ID) {
-			// Another pick is already probing this credential; keep the stale value if any.
-			if observation, ok := runtime.observe(candidate.ID); ok {
-				list[position].quota = observation
-				list[position].hasQuota = observation.score >= 0
-			}
+		list[position].quota = observation
+		if time.Since(observation.fetchedAt) > cacheTTL {
+			list[position].hasQuota = false
+			list[position].quota.score = -1
 			continue
 		}
-		entry := runtime.catalogEntry(candidate)
-		wait.Add(1)
-		slots <- struct{}{}
-		go func(index int, item pluginapi.HostAuthFileEntry) {
-			defer wait.Done()
-			defer func() { <-slots }()
-			defer runtime.release(item.ID)
-			runtime.probeQuota(callback, item)
-			if observation, ok := runtime.observe(item.ID); ok {
-				list[index].quota = observation
-				list[index].hasQuota = observation.score >= 0
-			}
-		}(position, entry)
+		list[position].hasQuota = observation.score >= 0
 	}
-	wait.Wait()
 
 	sort.SliceStable(list, func(left, right int) bool {
 		leftRank, rightRank := tier(list[left].quota.score, cfg), tier(list[right].quota.score, cfg)
@@ -663,6 +737,9 @@ func (b *balancer) summary() map[string]any {
 }
 
 func dispatch(method string, raw []byte, callback hostCallbackFunc) (any, error) {
+	// Any host-driven call carries the callback bridge, so the refresher can start
+	// as soon as the plugin is first used (registration, scheduling or management).
+	runtime.attachCallback(callback)
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
 		var request struct {
@@ -694,6 +771,12 @@ func dispatch(method string, raw []byte, callback hostCallbackFunc) (any, error)
 		runtime.catalog = nil
 		runtime.picks = nil
 		runtime.pickSeq = 0
+		if runtime.stop != nil {
+			close(runtime.stop)
+			runtime.stop = nil
+		}
+		runtime.running = false
+		runtime.callback = nil
 		runtime.mu.Unlock()
 		return struct{}{}, nil
 	default:
@@ -791,6 +874,7 @@ func registerResult(schemaVersion uint32) registerPayload {
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "cache_ttl", Type: pluginapi.ConfigFieldTypeString, Default: cfg.CacheTTL, Description: "How long a quota observation keeps ranking a credential (Go duration)."},
 				{Name: "timeout", Type: pluginapi.ConfigFieldTypeString, Default: cfg.Timeout, Description: "Per-credential quota probe timeout (Go duration)."},
+				{Name: "refresh_interval", Type: pluginapi.ConfigFieldTypeString, Default: cfg.Refresh, Description: "How often every credential is re-probed in the background (Go duration)."},
 				{Name: "low_threshold", Type: pluginapi.ConfigFieldTypeNumber, Default: cfg.Low, Description: "Remaining fraction below which a credential is demoted behind healthy ones."},
 				{Name: "critical_threshold", Type: pluginapi.ConfigFieldTypeNumber, Default: cfg.Critical, Description: "Remaining fraction below which a credential is used only as a last resort."},
 				{Name: "ignore_providers", Type: pluginapi.ConfigFieldTypeArray, Default: []string{}, Description: "Providers left entirely to the built-in scheduler."},

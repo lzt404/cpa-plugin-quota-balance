@@ -50,6 +50,7 @@ plugins:
       enabled: true
       priority: 0            # any value; the plugin only handles scheduling
       cache_ttl: 5m          # how long an observation ranks a credential
+      refresh_interval: 2m   # background re-probe cadence for every credential
       timeout: 8s            # per-credential probe timeout
       low_threshold: 0.15
       critical_threshold: 0.05
@@ -64,6 +65,10 @@ plugins:
 
 ## How the score is computed
 
+A single background loop re-probes every credential on `refresh_interval`; **scheduling never
+waits on the network**, so a slow or failing usage endpoint cannot add latency to a model
+request. A credential whose observation is older than `cache_ttl` is treated as `unknown`.
+
 Each probe reads the credential's `access_token` through `host.auth.get`, calls the provider
 usage endpoint through `host.http.do`, and keeps the **bottleneck** window — the smallest
 remaining fraction across every bucket, so 5-hour headroom cannot hide an exhausted 7-day
@@ -74,9 +79,9 @@ Requests are ranked by tier → remaining fraction → host `priority` → host 
 
 ## Verified behaviour
 
-`go test -race ./...` covers tier thresholds, bottleneck scoring, deduplicated probing, cache
-expiry, ignore/allow lists, unknown-quota fallback, provider payload parsing and config
-validation.
+`go test -race ./...` covers tier thresholds, bottleneck scoring, deduplicated probing,
+cache expiry, stale observations, ignore/allow lists, unknown-quota fallback, provider payload
+parsing and config validation.
 
 `acceptance.py` runs a real `v8.0.59` core binary with three real Claude auth files, a local
 fake Anthropic surface (usage endpoint + `/v1/messages`), and asserts on the scheduling
@@ -87,9 +92,11 @@ decisions the released `.so` actually made:
 | healthy credential preferred regardless of priority | `acct-alpha` |
 | quota change re-routes to the recovered credential | `acct-beta` |
 | least-drained credential wins when others are critical | `acct-gamma` |
-| missing quota evidence falls back to priority order | `acct-alpha` |
 | management status lists observed credentials | 3 credentials |
 | disabled plugin exposes no scheduler route | HTTP 404 |
+
+Unknown-quota fallback, stale-observation handling and the no-synchronous-probe guarantee are
+covered by the race-enabled unit suite instead, since they need no live core.
 
 ## License
 

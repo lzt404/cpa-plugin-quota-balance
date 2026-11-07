@@ -1,7 +1,7 @@
 {
   "id": "quota-balance",
   "name": "Quota Balance",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Scheduler plugin that ranks OAuth credentials by remaining quota: healthy accounts are preferred, low-quota accounts are demoted, and near-exhausted accounts are used only as a last resort. Fetches quota through the host quota-provider chain.",
   "author": "lzt404",
   "license": "MIT",

@@ -38,6 +38,7 @@ type fakeHost struct {
 	quotaBodies map[string]string
 	tokens      map[string]string
 	probes      map[string]int
+	ids         []string
 	httpStatus  int
 }
 
@@ -50,8 +51,8 @@ func (h *fakeHost) probeCount(token string) int {
 func (h *fakeHost) call(_ context.Context, method string, payload any) (json.RawMessage, error) {
 	switch method {
 	case "host.auth.list":
-		files := make([]pluginapi.HostAuthFileEntry, 0, len(h.quotaBodies))
-		for id := range h.quotaBodies {
+		files := make([]pluginapi.HostAuthFileEntry, 0, len(h.ids))
+		for _, id := range h.ids {
 			files = append(files, pluginapi.HostAuthFileEntry{ID: id, AuthIndex: id, Provider: "claude"})
 		}
 		return json.Marshal(map[string]any{"files": files})
@@ -81,17 +82,30 @@ func (h *fakeHost) call(_ context.Context, method string, payload any) (json.Raw
 }
 
 func newFakeHost(quotas map[string]string) *fakeHost {
-	host := &fakeHost{quotaBodies: map[string]string{}, tokens: map[string]string{}, probes: map[string]int{}}
+	host := &fakeHost{quotaBodies: map[string]string{}, tokens: map[string]string{},
+		probes: map[string]int{}, ids: make([]string, 0, len(quotas))}
 	for id, body := range quotas {
-		token := "Bearer " + id
-		host.quotaBodies[token] = body
+		host.quotaBodies["Bearer "+id] = body
 		host.tokens[id] = id
+		host.ids = append(host.ids, id)
 	}
 	return host
 }
 
+// seedObservations runs the real probe path once, mirroring what the background
+// refresher does before pick() is called.
+func seedObservations(t *testing.T, host *fakeHost) {
+	t.Helper()
+	entries := fetchCatalog(host.call)
+	runtime.setCatalog(entries)
+	for _, entry := range entries {
+		runtime.probeQuota(host.call, entry)
+	}
+}
+
 func pickOnce(t *testing.T, host *fakeHost, candidates ...pluginapi.SchedulerAuthCandidate) pluginapi.SchedulerPickResponse {
 	t.Helper()
+	seedObservations(t, host)
 	response, err := pick(pluginapi.SchedulerPickRequest{Provider: "claude", Candidates: candidates}, host.call)
 	if err != nil {
 		t.Fatalf("pick() error = %v", err)
@@ -171,32 +185,46 @@ func TestPickKeepsUnknownAheadOfExhausted(t *testing.T) {
 	}
 }
 
-func TestPickCachesWithinTTL(t *testing.T) {
+func TestPickNeverProbesSynchronously(t *testing.T) {
 	resetRuntime(t)
 	host := newFakeHost(map[string]string{"a": claudeHealthy})
-	pickOnce(t, host, candidate("a", "claude", 10))
-	pickOnce(t, host, candidate("a", "claude", 10))
-	if host.probeCount("Bearer a") != 1 {
-		t.Fatalf("probes = %d, want 1 within the cache TTL", host.probeCount("Bearer a"))
+	// pick() must not touch the network: with an empty cache it still answers, using
+	// the host priority order, and issues no probe.
+	response, err := pick(pluginapi.SchedulerPickRequest{
+		Provider: "claude", Candidates: []pluginapi.SchedulerAuthCandidate{candidate("a", "claude", 10)},
+	}, host.call)
+	if err != nil {
+		t.Fatalf("pick() error = %v", err)
+	}
+	if response.AuthID != "a" {
+		t.Fatalf("AuthID = %q", response.AuthID)
+	}
+	if host.probeCount("Bearer a") != 0 {
+		t.Fatalf("probes = %d, want 0 in the request path", host.probeCount("Bearer a"))
 	}
 }
 
-func TestPickReprobesAfterTTL(t *testing.T) {
+func TestStaleObservationRanksAsUnknown(t *testing.T) {
 	resetRuntime(t)
 	runtime.mu.Lock()
-	runtime.cacheTT = 1
+	runtime.cacheTT = time.Nanosecond
 	runtime.mu.Unlock()
-	host := newFakeHost(map[string]string{"a": claudeHealthy})
-	pickOnce(t, host, candidate("a", "claude", 10))
-	// Force the cached observation to look stale instead of sleeping in a unit test.
+	host := newFakeHost(map[string]string{"a": `{"seven_day":{"utilization":99}}`})
+	seedObservations(t, host)
 	runtime.mu.Lock()
 	entry := runtime.cache["a"]
 	entry.fetchedAt = entry.fetchedAt.Add(-time.Hour)
 	runtime.cache["a"] = entry
 	runtime.mu.Unlock()
-	pickOnce(t, host, candidate("a", "claude", 10))
-	if host.probeCount("Bearer a") != 2 {
-		t.Fatalf("probes = %d, want 2 after TTL expiry", host.probeCount("Bearer a"))
+	pick := pickOnce(t, host, candidate("a", "claude", 10))
+	if pick.AuthID != "a" {
+		t.Fatalf("AuthID = %q", pick.AuthID)
+	}
+	runtime.mu.Lock()
+	stored := runtime.picks[len(runtime.picks)-1]
+	runtime.mu.Unlock()
+	if stored.Tier != "unknown" {
+		t.Fatalf("tier = %q, want unknown for a stale observation", stored.Tier)
 	}
 }
 
@@ -315,7 +343,7 @@ func TestRegisterDeclaresCapabilities(t *testing.T) {
 func TestManagementStatusReportsObservations(t *testing.T) {
 	resetRuntime(t)
 	host := newFakeHost(map[string]string{"a": claudeHealthy})
-	pickOnce(t, host, candidate("a", "claude", 10))
+	seedObservations(t, host)
 	value, err := managementHandle(nil, host.call)
 	if err != nil {
 		t.Fatalf("managementHandle error = %v", err)

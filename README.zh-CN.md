@@ -46,6 +46,7 @@ plugins:
       enabled: true
       priority: 0            # 任意值，插件只接管调度
       cache_ttl: 5m          # 一次额度观测的有效期
+      refresh_interval: 2m   # 后台重新探测所有凭证的周期
       timeout: 8s            # 单个凭证探测超时
       low_threshold: 0.15
       critical_threshold: 0.05
@@ -60,6 +61,9 @@ plugins:
 
 ## 打分方式
 
+后台只有一个探测循环，按 `refresh_interval` 重新探测所有凭证；**调度本身从不等待网络**，
+所以额度接口变慢或失败不会给模型请求增加延迟。观测时间超过 `cache_ttl` 的凭证按 `unknown` 处理。
+
 每次探测通过 `host.auth.get` 读取凭证的 `access_token`，再通过 `host.http.do` 调用
 provider 的额度接口，取**瓶颈窗口**——所有 bucket 中最小的剩余比例，这样 5 小时的余量就掩盖
 不了一个快用完的 7 天窗口。Anthropic 的「已用百分比」（`42` 表示 42%）会换算成剩余比例
@@ -69,8 +73,8 @@ provider 的额度接口，取**瓶颈窗口**——所有 bucket 中最小的�
 
 ## 已验证行为
 
-`go test -race ./...` 覆盖等级阈值、瓶颈打分、并发去重探测、缓存过期、忽略/允许列表、
-未知额度回落、provider 报文解析与配置校验。
+`go test -race ./...` 覆盖等级阈值、瓶颈打分、并发去重探测、缓存过期、过期观测、忽略/允许
+列表、未知额度回落、provider 报文解析与配置校验。
 
 `acceptance.py` 使用真实的 `v8.0.59` 核心、三个真实 Claude auth 文件、本地伪 Anthropic
 接口（额度端点 + `/v1/messages`），对**已发布的 `.so`** 实际做出的调度决策断言：
@@ -80,9 +84,10 @@ provider 的额度接口，取**瓶颈窗口**——所有 bucket 中最小的�
 | 健康凭证优先于优先级更高的低额度凭证 | `acct-alpha` |
 | 额度变化后改选恢复的凭证 | `acct-beta` |
 | 多数凭证 critical 时选择剩余最多的 | `acct-gamma` |
-| 无额度证据时回落优先级顺序 | `acct-alpha` |
 | 管理接口列出已观测凭证 | 3 个凭证 |
 | 插件禁用后不再暴露调度接口 | HTTP 404 |
+
+无额度回落、观测过期处理和「调度不同步探测」由竞态单元测试覆盖，不需要真实核心。
 
 ## 许可证
 
